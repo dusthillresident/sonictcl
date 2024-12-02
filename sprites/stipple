@@ -1,0 +1,4 @@
+#define stipple_width 4
+#define stipple_height 4
+static unsigned char stipple_bits[] = {
+   0x05, 0x0a, 0x05, 0x0a};
