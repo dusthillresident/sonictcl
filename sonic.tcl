@@ -1454,11 +1454,19 @@ proc sonicMovement {} {
    set collision [collision colTest_brownFloorsAndPinkWalls $::sonicl $::sonicox $oy $::sonicx $y px py]
    if {$collision} {
     debugMsg "wall collision: sonic's nuts."
-    set ::sonicx $px
-    set ::sonicy [expr {$py+16.0}]
-    set ::sonicym 0.0
-    while {[colTest_brownFloorsAndPinkWalls $::sonicl $::sonicx $::sonicy]} { 
-     set ::sonicy [expr { $::sonicy - 1.0 }]
+    if { $collision == 1 && $::sonicym>0 && [colTest_onlyBrownFloors $::sonicl $px [expr {$py+1}]] } {
+     # Mon, Dec 23, 2024 - fix for sonic's nuts getting stuck on things - Sonic's nuts could get him stuck in walls or in floors
+     #tk_messageBox -title "test" -detail "nuts test"
+     set oldx $::sonicx; set oldy $::sonicy
+     set ::sonicx $px;   set ::sonicy $py
+     updateCameraOffset $oldx $oldy
+    } else {
+     set ::sonicx $px
+     set ::sonicy [expr {$py+16.0}]
+     set ::sonicym 0.0
+     while {[colTest_brownFloorsAndPinkWalls $::sonicl $::sonicx $::sonicy]} { 
+      set ::sonicy [expr { $::sonicy - 1.0 }]
+     }
     }
    }
   }
@@ -1885,11 +1893,12 @@ proc makeLostRing {x y xm ym l} {
 }
 
 proc lostRingAction {cItem data} {
- upvar objectIndex objectIndex;
+ upvar objectIndex objectIndex
  lassign $data ox oy xm ym l counter
  incr counter
  set x [expr {$ox+$xm}]
  set y [expr {$oy+$ym}]
+ if {$y >= $::by+21} {.c delete $cItem; lset ::levelObjects $objectIndex {}; return}
  set ym [expr {$ym+0.25}]
  set collided [collision colTest_lostRingCustom $l $ox $oy $x $y x y]
  if { $collided } {
@@ -2260,12 +2269,21 @@ bind . <Key-i> {
 #	o--------------o
 #	| Main program |
 #	o--------------o
+
 catch {destroy .notice}
 
 if {!$DEBUG} {
  wm withdraw .debug
  pack forget .f
 }
+
+if { [cmdArgumentIsDefined -edit] } {
+ loadLevel [lindex $gameLevels $::currentLevelIndex]
+ .c delete object
+ source "objecteditor.tcl"
+ return
+}
+
 if 0 {
  set fileout [open fileout.txt w]
  bind . <Key-r> {
