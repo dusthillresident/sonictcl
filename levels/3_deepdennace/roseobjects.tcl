@@ -19,7 +19,7 @@ proc scrystalAction { cItem data } {
    set ::sonicOnObjectPlatform 1
    return
   }
-  if {$::sonicState == $::SONIC_ROLL} {
+  if {$::sonicState == {ROLL}} {
    upvar objectIndex objectIndex
    #sCrystalSmash $objectIndex
    makeBurst $x $y
@@ -47,7 +47,7 @@ proc scrystalAction { cItem data } {
   }
  } else { 
   # sonic in the air -----------------------------------------------------------------------
-  if {$::sonicState == $::SONIC_SPIN || $::sonicState == $::SONIC_ROLL} {
+  if {$::sonicState == {SPIN} || $::sonicState == {ROLL}} {
    set yy [expr {$y+15.0}]
    set sy [expr {$::sonicy+15.5}]
    if { sqrt( pow($x-$::sonicx,2)+pow($y-$::sonicy,2) ) < 42.0 } {

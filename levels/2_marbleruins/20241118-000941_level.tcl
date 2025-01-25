@@ -7,14 +7,6 @@ set ::sonicx 40.0
 set ::sonicy 726.0
 set ::sonicl 0
 
-.c coords gfx1 1808 1719
-
-set ::goalx 6244
-set ::goaly 3542
-
-
-if 1 {
-
 makeSpring 2557 730
 
 makeSpring 641 2749 right
@@ -58,6 +50,10 @@ makeSpring 5737 3139
 #makeMonitor 1066 433 speed
 
 #makeRing 511 243
+.c coords gfx1 1808 1719
+
+set ::goalx 6244
+set ::goaly 3542
 
 lineItems 4906 2071 6006 2027 11 makeRing
 lineItems 2788 2840 5500 3392 20 makeRing
@@ -178,4 +174,3 @@ makeHurtzone 4938 3476 5162 3529
 makeHurtzone 5162 3529 5214 3540
 makeHurtzone 5307 3539 5560 3560
 
-}
