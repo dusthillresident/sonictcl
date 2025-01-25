@@ -21,4 +21,4 @@ Disable joypad (you might need to do this if you have a laptop that exposes the 
 
 Start on level '[number]': `-level [number]`
 
-Thank you
+Windows randomly thinks this is a virus, I don't know why it does that.
