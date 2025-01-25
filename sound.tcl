@@ -1,4 +1,4 @@
-set lastSong {}
+	set lastSong {}
 
  proc playSound {dummy} {}
  proc stopMusic {dummy} {}
@@ -31,24 +31,20 @@ if {[tk windowingsystem] ne "x11"} {
  package require snackogg
 }
 
-if {[tk windowingsystem] ne "x11"} {
- snack::audio playLatency 166
+if { [cmdArgumentIsDefined -playLatency] } {
+ snack::audio playLatency [cmdArgument -playLatency]
 } else {
- snack::audio playLatency 166
+ if {[tk windowingsystem] ne "x11"} {
+  snack::audio playLatency 166
+ } else {
+  snack::audio playLatency 166
+ }
 }
 
 #	o-------o
 #	| Sound |
 #	o-------o
 
-snack::sound snacksucks -file sounds/snackreallysucks.wav
-set fucksnack {}
-proc snackreallysucks {} { 
- snacksucks play
- set ::fucksnack [after 4344 snackreallysucks]
-}
-snackreallysucks
-update
 snack::sound snd_rings -file sounds/rings.wav
 snack::sound snd_ring -file sounds/ring.wav
 snack::sound snd_jump -file sounds/jump.wav
@@ -63,6 +59,23 @@ snack::sound snd_ping -file sounds/ping.wav
 snack::sound snd_shoot -file sounds/shoot.wav
 snack::sound snd_explode -file sounds/explode.wav
 snack::sound snd_spring -file sounds/spring.wav
+snack::sound snd_nice -file sounds/nice.wav
+snack::sound snacksucks -file sounds/snackreallysucks.wav
+snacksucks play
+foreach i {snd_rings snd_ring snd_jump snd_roll snd_spindash snd_release snd_hit snd_bugcheck snd_pop snd_shield 
+           snd_ping snd_shoot snd_explode snd_spring snd_nice } {
+ $i play; update
+ $i stop; update
+}
+snacksucks stop
+update 
+set fucksnack {}
+proc snackreallysucks {} { 
+ snacksucks play
+ set ::fucksnack [after 4344 snackreallysucks]
+}
+snackreallysucks
+update
 
 snack::sound snd_bgm -file sounds/jump.wav
 set queuedMusicReplay {}
@@ -134,6 +147,7 @@ proc playSound {sound} {
   shoot {snd_shoot stop; snd_shoot play}
   explode {snd_explode stop; snd_explode play}
   spring {snd_spring stop; snd_spring play}
+  nice {snd_nice stop; snd_nice play}
  }
 }
 

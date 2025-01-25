@@ -1,13 +1,17 @@
 #!/usr/bin/env tclsh
 
+proc cmdAlias {nickname realname} {
+ set ::argv [lmap i $::argv {if {$i eq $nickname} {set realname} else {set i}}]
+}
+cmdAlias -recordgame -recorddemo
+
 package require Tk
-tk appname "Sonac the Hedgehog"
+tk appname "Sonac the Hedgehog v2"
 pack [label .notice -text "Loading, please wait" -font {sans 20}] -fill both -expand 1
 update
 update
 
-set gameRecording {}
-set holdGameRecording {}
+set fullGameRecording {}
 set timeAverage 0.0
 set song {}
 
@@ -30,6 +34,15 @@ proc cmdArgument {argument {default {}} } {
 proc cmdArgumentIsDefined {argument} {
  expr { [lsearch -exact $::argv $argument] != -1 }
 }
+proc cmdArgumentsAreDefined {args} {
+ foreach i $args {
+  if { [cmdArgumentIsDefined $i] } {return 1}
+ }
+ return 0
+}
+
+set DONT_CONVERT_GEOMETRY [::tcl::mathop::! [cmdArgumentIsDefined -convert]]
+source geometryToText.tcl
 
 set DEBUG [cmdArgumentIsDefined -debug]
 set DEBUG_MESSAGES [cmdArgumentIsDefined -debugmsg]
@@ -38,15 +51,28 @@ set PLAY_MUSIC [cmdArgument -music 1]
 set ENABLE_SOUND [cmdArgument -sound 1]
 set SHOW_TITLECARD [cmdArgument -titlecard 1]
 set SHOW_TITLESCREEN [cmdArgument -titlescreen 1]
+if { [cmdArgumentIsDefined -quick] } {
+ set SHOW_TITLECARD 0
+ set SHOW_TITLESCREEN 0
+}
 set currentLevelIndex [cmdArgument -level 1]
 
 set recordGame [expr { [cmdArgumentIsDefined -recorddemo] && ! [cmdArgumentIsDefined -playdemo] }]
 if {$recordGame} {
  set demoFile [cmdArgument -demofile recorded_demo.txt]
 }
-set playRecording [cmdArgumentIsDefined -playdemo]
+set playRecording [cmdArgumentsAreDefined -playdemo -replay]
 if {$playRecording} {
- set gameRecording [read [open [cmdArgument -demofile recorded_demo.txt]]]
+ if {[cmdArgumentIsDefined -replay]} {
+  set path [cmdArgument -replay]
+  if { ! [cmdArgumentIsDefined -level] && [lindex [file split $::path] end-2] eq {replays} } {
+   set currentLevelIndex [lindex [file split $::path] end-1]
+  }
+  set fullGameRecording [lrepeat 32 {0 0}]
+  lset fullGameRecording [expr {$currentLevelIndex-1}] [read [open [cmdArgument -replay ]]]
+ } else {
+  set fullGameRecording [read [open [cmdArgument -demofile recorded_demo.txt]]]
+ }
 }
 set recordingPos 0
 set watchPos [cmdArgument -watchpos 0]
@@ -62,6 +88,7 @@ if { [cmdArgumentIsDefined -test] } {
  set ENABLE_SOUND 0
  set SHOW_TITLECARD 0
  set SHOW_TITLESCREEN 0
+ set DONT_CONVERT_GEOMETRY 1
  set currentLevelIndex [cmdArgument -level 0]
 }
 
@@ -70,9 +97,17 @@ if {! $DEBUG_MESSAGES } {
 }
 
 set timeDivisor [cmdArgument -timedivisor 1000.0]
-if { $tcl_platform(platform) eq {windows} && ![cmdArgumentIsDefined -timedivisor] } {
- set timeDivisor 1400.0
+set wtime [cmdArgument -wtime]
+if { $tcl_platform(platform) eq {windows} && ![cmdArgumentIsDefined -wtime] } {
+ # Unfortunately, on windows the 'after (miliseconds)' command doesn't work properly,
+ # and the amount of time it sleeps for is unpredictable and not accurate to the miliseconds argument specified.
+ # So on windows, the game has to hog a cpu core in order to run at a smooth consistent framerate.
+ # this is not a problem on Linux
+ set wtime 0
 }
+set frameMs [cmdArgument -framems 16666]
+set frameTimeLength [expr { int((16666.66666666)/double($timeDivisor)) }]
+#puts "Time to wait between frames: $frameTimeLength ms\n"
 set WTIME 17
 if {$::tcl_platform(platform) eq {windows}} {
  set WTIME 7
@@ -114,32 +149,17 @@ catch {
  wm deiconify .
 }
 
-if 0 {
-rename update _update
-set ::restarted 0
-proc update {} {
- if {$::restarted} {
-  set ::restarted 0
-  return
- }
- _update
-}
-}
-
 source "loadsprites.tcl"
 source "sound.tcl"
 
-image create photo level0 
-image create photo level1 
 image create photo graphics0 
 image create photo graphics1
 
-set level [list level0 level1]
+set level {}
 
-#pack [button .b -text Test]
-set wtime [cmdArgument -wtime]
-#set wtime 40
 toplevel .debug
+pack [label .debug.x -textvariable sonicx -anchor w] -fill x
+pack [label .debug.y -textvariable sonicy -anchor w] -fill x
 pack [entry .debug.e -textvariable wtime] -fill x
 pack [listbox .debug.lb -listvariable levelObjects] -fill x -expand 1
 pack [frame .f -relief raised -borderwidth 1] -fill x
@@ -162,14 +182,15 @@ incr by -1
 #	o-------------o
 
 .c create text 0 0 -anchor nw -text "Rings: " -tag rings -font {Sans 20}  -fill yellow
+#if {$DISABLE_GFX_LAYERS} {.c create image 0 0 -anchor nw -tag gfx-1}
 .c create image 0 0 -anchor nw -tag gfx0
 .c create image 0 0 -anchor nw -tag gfx1
-if {!$DISABLE_GFX_LAYERS} {
- image create photo gfx0 
- image create photo gfx1
- .c itemconfigure gfx0 -image gfx0
- .c itemconfigure gfx1 -image gfx1
-}
+
+image create photo gfx0 
+image create photo gfx1
+.c itemconfigure gfx0 -image gfx0
+.c itemconfigure gfx1 -image gfx1
+
 
 .c create image 0 0 -tag sonic
 .c create image 0 0 -tag spindash
@@ -187,14 +208,7 @@ proc debugCanvasOrder {} {
 #	| Debug infographics canvas items |
 #	o---------------------------------o
 
-# Debug infographics canvas items
-if {$DEBUG || $DISABLE_GFX_LAYERS} {
- set layerItem1 [.c create image 0 0 -anchor nw -image level1 -tag geometry1]
- set layerItem0 [.c create image 0 0 -anchor nw -image level0 -tag geometry0]
- set layerItems [list $layerItem0 $layerItem1]
-}
-# Set the scroll region to the width and height of the level
-.c configure -scrollregion [list 0 0 [image width level0] [image height level0]]
+
 
 image create photo marker -file sprites/debug/marker.png
 image create photo marker2 -file sprites/debug/marker2.png
@@ -245,17 +259,6 @@ if {$DEBUG} {
   angleTest2 %x %y
  }
 }
-
-
-#	o-----------------o
-#	| Init game state |
-#	o-----------------o
-
-
-proc initGame {} {
- 
-}
-
 
 #	o------------o
 #	| Title card |
@@ -367,52 +370,57 @@ set currentLevelPath {}
 set ::restarted 1
 proc loadLevel {path} {
  debugMsg "loadLevel start"
- expr { srand(-123456) }
  set ::restarted 1
  set oldLevelPath $::currentLevelPath
- if {$oldLevelPath ne $path} {
-  set ::holdGameRecording $::gameRecording
- } else {
-  set ::gameRecording $::holdGameRecording
- }
+ #if {$oldLevelPath ne $path} {
+ # set ::holdGameRecording $::gameRecording
+ #} else {
+ # set ::gameRecording $::holdGameRecording
+ #}
  set ::currentLevelPath $path
  foreach i [.c find withtag object] {
   .c delete $i
  }
+ # --- init state ---
  initGameVariables
+ if { $::playRecording } {
+  set ::gameRecording [lindex $::fullGameRecording [expr {$::currentLevelIndex-1}]]
+  #puts "here $::gameRecording"
+ }
+ # -- load level geometry and data ---
  if {$oldLevelPath ne $path} {
-  image delete level0
-  image delete level1
-  if {!$::DISABLE_GFX_LAYERS} {
-   image delete gfx0
-   image delete gfx1
-  }
-  image create photo level0 -file "$path/layer0.png"
-  image create photo level1 -file "$path/layer1.png"
+  loadGeometry $path
   if {!$::DISABLE_GFX_LAYERS} {
    image create photo gfx0 -file "$path/graphics0.png"
    image create photo gfx1 -file "$path/graphics1.png"
+  } else {
+   image create photo gfx0 -file "$path/layer0.png"
+   image create photo gfx1 -file "$path/layer1.png"
   }
  }
- .c configure -scrollregion [list 0 0 [image width level0] [image height level0]]
- set ::bx [image width level0]
- set ::by [image height level0]
- incr bx -1
- incr by -1
+ set ::bx [::tcl::mathfunc::max {*}$::levW]
+ set ::by [::tcl::mathfunc::max {*}$::levH]
+ .c configure -scrollregion [list 0 0 $::bx $::by]
  .c coords gfx0 0 0
  .c coords gfx1 0 0
  source "$path/level.tcl"
+ if {$::DISABLE_GFX_LAYERS} {
+  # some levels change the position of the graphics layer image objects, if gfx is disabled we must undo that
+  .c coords gfx0 0 0
+  .c coords gfx1 0 0
+ }
  .c create rectangle [cx 0] [cy 0] [cx 640] [cy 480] -fill black -outline black -tag snacksucks
  playSong $::song
  .c delete snacksucks
  .c coords goal $::goalx $::goaly
  lassign [.c bbox goal] ::goalx1 ::goaly1 ::goalx2 ::goaly2
- if {$::DEBUG || $::DISABLE_GFX_LAYERS} {
-  .c raise [lindex $::layerItems $::sonicl] [lindex $::layerItems [expr {!$::sonicl}]] 
- }
  .c raise gfx1
  foreach i {goal sonic spindash shield} {
   .c lower $i gfx1
+ }
+ if {$::DISABLE_GFX_LAYERS} {
+  .c itemconfigure gfx1 -image {}
+  .c itemconfigure gfx0 -image [lindex {gfx0 gfx1} $::sonicl]
  }
  .c moveto shield -600 -600
  .c moveto spindash -600 -600
@@ -420,20 +428,105 @@ proc loadLevel {path} {
  centreViewSonic
  titleCard
  debugMsg "loadLevel end"
+ error "LEVEL_LOADED"
+}
+
+proc demoPlaybackMode? {} {cmdArgumentsAreDefined -playdemo -replay}
+
+proc saveReplay {} {
+ if { [demoPlaybackMode?] } return
+ catch {
+  if { ! [file isdirectory replays/$::currentLevelIndex] } {
+   file mkdir replays/$::currentLevelIndex
+  }
+  set path replays/$::currentLevelIndex/[clock seconds].txt
+  set f [open $path w]
+  puts $f $::gameRecording
+  close $f
+ }
+}
+
+# time trial records
+proc loadRecords {} {
+ set ::records [lrepeat 32 {}]
+ catch {
+  set f [open records.txt]
+  set ::records [read $f]
+  close $f
+ }
+ if { [llength $::records] != 32 } {
+  set ::records [lrepeat 32 {}]
+ }
+}
+proc saveRecords {} {
+ catch {
+  set f [open records.txt w]
+  puts $f $::records
+  close $f
+ }
+}
+proc getCurrentBestRecord {} {
+ loadRecords
+ return [lindex $::records $::currentLevelIndex] 
+}
+proc saveRecord {} {
+ set thisRecord [getCurrentBestRecord]
+ set ::lastBestRecord $thisRecord
+ if { $thisRecord eq {} || $thisRecord > $::framecounter } {
+  lset ::records $::currentLevelIndex $::framecounter
+  saveRecords
+  return 1
+ } else {
+  return 0
+ }
+}
+proc recordToString {record} {
+ if {$record eq {}} {return "\[no record\]"}
+ set l [list [expr {$record / 60 / 60}]  [expr {$record / 60 % 60}]  [expr { int($record % 60 / 60.0 * 100.0) }]]
+ set l [lmap i $l {format %02d $i}]
+ join $l :
 }
 
 set gameComplete 0
+proc putText {x y msg {col white}} {
+ .c create text [cx [expr {$x+1}]] [cy [expr {$y+1}]] -font {Sans 20} -text $msg -tag object -anchor w -fill black
+ .c create text [cx $x] [cy $y] -font {Sans 20} -text $msg -tag object -anchor w -fill $col
+}
 proc sonicHasPassed {} {
- puts "Time average: [expr { [::tcl::mathop::+ {*}$::timeAverage] / $::framecounter / 1000.0 }]"
+ puts "framecounter: $::framecounter"
+ puts "Time average:	[expr { [::tcl::mathop::+ {*}$::timeAverage] / $::framecounter / 1000.0 }]"
+ puts "Slowest frame:	[expr { [::tcl::mathfunc::max {*}$::timeAverage] / 1000.0}]"
+ puts "Fastest frame:	[expr { [::tcl::mathfunc::min {*}$::timeAverage] / 1000.0}]"
+ puts "Lag frames:	[ 
+  set lagFrames 0
+  set t [expr {  $::frameTimeLength * 1000  }]
+  foreach i $::timeAverage { if {$i >= $t} {incr lagFrames} }
+  set lagFrames
+ ] out of [llength $::timeAverage] ([expr { int( $lagFrames / double([llength $::timeAverage]) * 100.0 ) }]%)"
+ puts ""
+ if { $::recordGame } {
+  lappend ::fullGameRecording $::gameRecording
+  #puts "here.. $::gameRecording"
+ }
+ saveReplay
  lassign {-999 -999 -999 -999} ::goalx1 ::goaly1 ::goalx2 ::goaly2
  playSong levelclear
- #.c create rectangle [cx] [cy] [expr [cx]+640] [expr [cy]+480] -fill black -outline {} -tag haspassed
- .c create text [cx 101] [cy 101] -font {Sans 20} -text "Sonac has passed '$::levelTitle'" -tag object -anchor w -fill black
- .c create text [cx 100] [cy 100] -font {Sans 20} -text "Sonac has passed '$::levelTitle'" -tag object -anchor w -fill white
- .c create text [cx 101] [cy 201] -font {Sans 20} -text "Press JUMP to continue" -tag object -anchor w -fill black
- .c create text [cx 100] [cy 200] -font {Sans 20} -text "Press JUMP to continue" -tag object -anchor w -fill white
- while { $::input & $::I_JUMP } { after 7; update }
- while { ! ($::input & $::I_JUMP) } { after 7; update }
+ putText 100 70 "Sonac has passed '$::levelTitle'" 
+ putText 100 300 "Press JUMP to continue"
+ set yy 77; set ystp 26;
+ putText 120 [incr yy $ystp] "Current record:" yellow
+ putText 120 [incr yy $ystp] "  [recordToString [getCurrentBestRecord]]" orange
+ putText 120 [incr yy $ystp] "This record:" yellow
+ putText 120 [incr yy $ystp] "  [recordToString $::framecounter]" orange
+ foreach blah {1 2} {incr yy $ystp}
+ # time trial record
+ if { ! [demoPlaybackMode?] && [saveRecord] && $::lastBestRecord ne {}} {
+  putText 120 [incr yy $ystp] "Wow!! It's a new record!!" pink
+  playSound nice
+ }
+ # wait for input
+ while { $::input & $::I_JUMP } { after 17; update }
+ while { ! ($::input & $::I_JUMP) } { after 17; update }
  vignetteEffect
  incr ::currentLevelIndex
  if {[lindex $::gameLevels $::currentLevelIndex] eq {}} {
@@ -456,89 +549,65 @@ proc int x {
 
 # This returns 1 if the pixel at x,y is a floor
 proc colTest_floors {layer x y} {
- if {$x<0 || $y<0 || $x>=$::bx || $y>=$::by} {
-  return 0
- }
- set got [[lindex $::level $layer] get [expr {int($x)}] [expr {int($y)}]]
- return [expr {$got eq {128 64 0} || $got eq {128 0 0} || $got eq {0 128 0}}]
+ set got [levelGet $layer $x $y]
+ return [expr {$got eq {f} || $got eq {p}}]
 }
 
 proc colTest_forFloorAngle {layer x y} {
- if {$x<0 || $y<0 || $x>=$::bx || $y>=$::by} {
-  return 0
- }
- set got [[lindex $::level $layer] get [expr {int($x)}] [expr {int($y)}]]
- return [expr {$got eq {128 64 0} || $got eq {128 0 0} || $got eq {0 128 0} || $got eq {0 128 128}}]
+ set got [levelGet $layer $x $y]
+ return [expr {$got eq {f} || $got eq {p} || $got eq {g}}]
 }
 
 # This returns 1 if the pixel at x,y is a 'wall'
 proc colTest_walls {layer x y} {
- if {$x<0 || $y<0 || $x>=$::bx || $y>=$::by} {
-  return 0
- }
- set got [[lindex $::level $layer] get [expr {int($x)}] [expr {int($y)}]]
- return [expr {$got eq {128 64 0} || $got eq {128 0 0} || $got eq {255 128 128}}]
+ set got [levelGet $layer $x $y]
+ return [expr {$got eq {f} || $got eq {w}}]
 }
 
 # This returns 1 if either a floor or a wall
 proc colTest_floorswalls {layer x y} {
- if {$x<0 || $y<0 || $x>=$::bx || $y>=$::by} {
-  return 0
- }
- set got [[lindex $::level $layer] get [expr {int($x)}] [expr {int($y)}]]
- return [expr {$got eq {128 64 0} || $got eq {128 0 0} || $got eq {0 128 0} || $got eq {255 128 128}}]
+ set got [levelGet $layer $x $y]
+ return [expr {$got eq {f} || $got eq {p} || $got eq {w}}]
 }
 
 # This is hacked for the lost rings
 proc colTest_lostRingCustom {layer x y} {
- if {$x<0 || $y<0 || $x>=$::bx || $y>=$::by} {
-  return 0
- }
- set got [[lindex $::level $layer] get [expr {int($x)}] [expr {int($y)}]]
- if {$got eq {0 128 0}} {
+ set got [levelGet $layer $x $y]
+ if {$got eq {p}} {
   upvar y1 y1 y2 y2
   return [expr {$y1<$y2}]
  }
- return [expr {$got eq {128 64 0} || $got eq {128 0 0} || $got eq {255 128 128}}]
+ return [expr {$got eq {f} || $got eq {w}}]
 }
 
 # This returns 1 if either a brown floor or a pink wall, NOT green floors
 proc colTest_brownFloorsAndPinkWalls {layer x y} {
- if {$x<0 || $y<0 || $x>=$::bx || $y>=$::by} {
-  return 0
- }
- set got [[lindex $::level $layer] get [expr {int($x)}] [expr {int($y)}]]
- return [expr {$got eq {128 64 0} || $got eq {128 0 0} || $got eq {255 128 128}}]
+ set got [levelGet $layer $x $y]
+ return [expr {$got eq {f} || $got eq {w}}]
 }
 
 proc colTest_onlyBrownFloors {layer x y} {
- if {$x<0 || $y<0 || $x>=$::bx || $y>=$::by} {
-  return 0
- }
- set got [[lindex $::level $layer] get [expr {int($x)}] [expr {int($y)}]]
- return [expr {$got eq {128 64 0} || $got eq {128 0 0}}]
+ set got [levelGet $layer $x $y]
+ return [expr {$got eq {f}}]
 }
 
 proc colTest_onlyGreenFloors {layer x y} {
- if {$x<0 || $y<0 || $x>=$::bx || $y>=$::by} {
-  return 0
- }
- set got [[lindex $::level $layer] get [expr {int($x)}] [expr {int($y)}]]
- return [expr {$got eq {0 128 0}}]
+ set got [levelGet $layer $x $y]
+ return [expr {$got eq {p}}]
 }
 
 
-array set floorCollisionResultCodes [list {128 64 0} 1 {128 0 0} 1 {0 128 0} 2 {255 128 128} 4]
+array set floorCollisionResultCodes [list {f} 1 {f} 1 {p} 2 {w} 4]
 
 set FCS 3
 proc _floorCollision {layer x1 y1 x2 y2 xReturn yReturn colTest} {
  #.c coords fadebug $x1 $y1 $x2 $y2
  if { [$colTest $layer $x1 $y1] } {return 0}
  upvar $xReturn rx $yReturn ry
- if {$x2<0} {set x2 0}
- if {$x2>$::bx} {set x2 $::bx}
- if {$y2<0} {set y2 0}
- if {$y2>$::by} {set y2 $::by}
+ #if {$x2<0} {set x2 0}
+ #if {$x2>$::bx} {set x2 $::bx}
+ #if {$y2<0} {set y2 0}
+ #if {$y2>$::by} {set y2 $::by}
 
  if { ! [$colTest $layer $x2 $y2] } {
   set xd [expr {$x2-$x1}]
@@ -546,7 +615,7 @@ proc _floorCollision {layer x1 y1 x2 y2 xReturn yReturn colTest} {
   set d [expr { sqrt( $xd*$xd+$yd*$yd )}]
   if {$d<$::FCS} {return 0}
   set success 0
-  for {set i $::FCS} {$i<$d-4} {incr i 5} {
+  for {set i $::FCS} {$i<$d-4} {incr i 4} {
    set xx [expr {$x1+$xd*(double($i)/$d)}]
    set yy [expr {$y1+$yd*(double($i)/$d)}]
    #.c raise fadebug; .c raise marker; .c coords marker $xx $yy; update; after 16
@@ -577,13 +646,14 @@ proc _floorCollision {layer x1 y1 x2 y2 xReturn yReturn colTest} {
  set ry [list $y1 $y2]
  return 1
 }
+set fcrrxy {}; # colTest_floors
 proc floorCollision {layer x1 y1 x2 y2 xReturn yReturn {index 0}} {
  upvar $xReturn rx $yReturn ry
- set result [_floorCollision $layer $x1 $y1 $x2 $y2 rrx rry colTest_floors]
+ set result [_floorCollision $layer $x1 $y1 $x2 $y2 rrx rry colTest_floorswalls]
  if {$result} {
 
   # return 1 for brown floors, 2 for green floors
-  set floorType $::floorCollisionResultCodes([[lindex $::level $layer] get [expr {int([lindex $rrx 1])}] [expr {int([lindex $rry 1])}]])
+  set floorType $::floorCollisionResultCodes([levelGet $layer [expr {int([lindex $rrx 1])}] [expr {int([lindex $rry 1])}]])
   # -- put here: special check for absolute right angles, to prevent inappropriate attaching when doing floor collision, which must be disable-able via option parameter
   # ---
   # -- possibly also put here: special check for green floors, make them invisible from underneath
@@ -591,6 +661,8 @@ proc floorCollision {layer x1 y1 x2 y2 xReturn yReturn {index 0}} {
   # ---
   set rx [lindex $rrx $index]
   set ry [lindex $rry $index]
+  lassign $rrx ::fcrrx1 ::fcrrx2
+  lassign $rry ::fcrry1 ::fcrry2
   set result $floorType
  }
  return $result
@@ -600,7 +672,7 @@ proc wallCollision {layer x1 y1 x2 y2 xReturn yReturn {index 0}} {
  upvar $xReturn rx $yReturn ry
  set result [_floorCollision $layer $x1 $y1 $x2 $y2 rx ry colTest_walls]
  if {$result} {
-  set result $::floorCollisionResultCodes([[lindex $::level $layer] get [expr {int([lindex $rx 1])}] [expr {int([lindex $ry 1])}]])
+  set result $::floorCollisionResultCodes([levelGet $layer [expr {int([lindex $rx 1])}] [expr {int([lindex $ry 1])}]])
   set rx [lindex $rx $index]
   set ry [lindex $ry $index]
  }
@@ -611,7 +683,7 @@ proc collision {colTest layer x1 y1 x2 y2 xReturn yReturn {index 0}} {
  upvar $xReturn rx $yReturn ry
  set result [_floorCollision $layer $x1 $y1 $x2 $y2 rx ry $colTest]
  if {$result} {
-  set result $::floorCollisionResultCodes([[lindex $::level $layer] get [expr {int([lindex $rx 1])}] [expr {int([lindex $ry 1])}]])
+  set result $::floorCollisionResultCodes([levelGet $layer [expr {int([lindex $rx 1])}] [expr {int([lindex $ry 1])}]])
   set rx [lindex $rx $index]
   set ry [lindex $ry $index]
  }
@@ -637,7 +709,6 @@ set _floorAngle_failure_result [expr {$PID2+$PI2}]
 proc _floorAngle {layer x y} {
  #puts "floorAngle called at $layer, $x, $y"
  global PI PI2 PID2 faDist
- set mode 0
  set a1 0
  set a2 0
  set last -1
@@ -688,10 +759,10 @@ proc _floorAngle {layer x y} {
 
 array set angleoverrides "
  {128 128 128} $PI
- {0 255 0}   [expr $PI]
- {0 0 255}   [expr $PID2]
- {255 0 255} [expr 0]
- {255 0 0}   [expr $PID2*3]
+ {^}   [expr $PI]
+ {>}   [expr $PID2]
+ {v} [expr 0]
+ {<}   [expr $PID2*3]
 "
 set lastAngleResult $PI
 proc floorAngle {layer x y} {
@@ -699,7 +770,7 @@ proc floorAngle {layer x y} {
  #set y [expr {int($y)}]
  # put here: look up this position in the 'angle override' image
  # and if found, return the looked up angle
- set lookup [[lindex $::level $layer] get [expr {int($x)}] [expr {int($y)}]]
+ set lookup [levelGet $layer $x $y]
  # perhaps put here: if $lookup eq {128 128 128} then return some default value
  #if {$lookup eq {128 128 128}} {
  # debugMsg "floorAngle: warning: returning 'lastAngleResult'	$::lastAngleResult"
@@ -736,7 +807,7 @@ proc angleTest {x y} {
 }
 
 proc sonicFlyOff {} {
- if { abs($::sonicm)>5.44 } {
+ if { abs($::sonicm)>5.44*$::speedo } {
   set m $::sonicm
   debugMsg "Detaching sonic because 'fly off'"
   detachSonicFromFloor
@@ -829,8 +900,8 @@ proc moveSonicOnFloor {dist} {
   set y $y1
   set a [floorAngle $layer $x $y]
   # if we entered a flyoff point, we must flyoff
-  set colourAtCurrentPosition [[lindex $::level $layer] get [expr {int($x)}] [expr {int($y)}]]
-  if {$colourAtCurrentPosition eq {255 128 0}} {
+  set colourAtCurrentPosition [levelGet $layer $x $y]
+  if {$colourAtCurrentPosition eq {o}} {
    sonicFlyOff
    set ::sonicx [expr {$::sonicx+$dist*sin($a)}]
    set ::sonicy [expr {$::sonicy+$dist*cos($a)}]
@@ -838,7 +909,7 @@ proc moveSonicOnFloor {dist} {
   }
   # if we entered a layer switcher, we must switch layers
   set wasInLayerSwitcher $inLayerSwitcher
-  set inLayerSwitcher [expr {$colourAtCurrentPosition eq {128 128 255}}]
+  set inLayerSwitcher [expr {$colourAtCurrentPosition eq {s}}]
   #debugMsg wasIn $wasInLayerSwitcher in $inLayerSwitcher x $x y $y
   if { $inLayerSwitcher && !$wasInLayerSwitcher } {
    set layer [expr {! $layer }]
@@ -856,7 +927,12 @@ proc moveSonicOnFloor {dist} {
 
 proc initGameVariables {} {
 uplevel "#0" {
-set timeAverage 0.0
+expr { srand(-123456) }
+set restarted 1
+set gameRecording {}
+set recordingPos 0
+set playRecording [cmdArgumentsAreDefined -playdemo -replay]
+set timeAverage {}
 set sonicSpeed 0
 set sonicx 500.0
 set sonicy 500.0
@@ -872,19 +948,22 @@ set sonicym 0.0
 set sonicOnFloor 0
 set sonicOnObjectPlatform 0
 set sonicWasOnObjectPlatform 0
-set sonicState 0
+set sonicState NORMAL
 set sonicFacing 1; #0 left, 1 right
-lassign {0 1 2 3 4 5 6 7 8} SONIC_NORMAL SONIC_ROLL SONIC_SPIN SONIC_HURT SONIC_DUCK
-set sonicStateNames {SONIC_NORMAL SONIC_ROLL SONIC_SPIN SONIC_HURT SONIC_DUCK}
+lassign {0 1 2 3 4 5 6 7 8} NORMAL ROLL SPIN HURT DUCK
+set sonicStateNames {NORMAL ROLL SPIN HURT DUCK}
 array set sonicHalfHeight "
- $SONIC_NORMAL 28.5
- $SONIC_ROLL 15.5
- $SONIC_SPIN 15.5
- $SONIC_HURT 15.5
- $SONIC_DUCK 15.5
+ NORMAL 28.5
+ ROLL 15.5
+ SPIN 15.5
+ HURT 15.5
+ DUCK 15.5
 "
 set sonicInvinc 0
 set sonicStar 0
+
+
+
 
 set sonicJumpStartYM 9
 set sonicJumpContinueM 1.20
@@ -902,13 +981,65 @@ set sonicDashing 0
 
 set sonicRollDrag 0.9964
 set sonicWalkDrag 0.98
-set sonicAirDrag [expr {($sonicRollDrag+$sonicWalkDrag)*0.5}]
+set sonicAirDrag 0.9882
 set sonicSlopePush 0.32
+set sonicDetachM 7.5
 
-set m 1.6
-set sonicRunAccel [expr 0.15*$m]
-set sonicSkidAccel [expr 0.2*$m]
-set sonicRollBrake [expr 0.05*$m]
+set sonicRunAccel 0.24
+set sonicSkidAccel 0.32000000000000006
+set sonicRollBrake 0.08000000000000002
+
+
+set speedo [cmdArgument -speedo 0.78]
+
+set sonicJumpStartYM [expr $speedo * 9]
+set sonicJumpContinueM [expr $speedo * 1.20]
+set sonicJumpContinueDecline [expr 1 - (1 - $speedo) * 0.875]
+set sonicGravity [expr $speedo * 0.7 * (9.0 / 0.7)]
+
+# Drag multipliers (scaled closer to 1)
+set dragAdjust 1.044
+set sonicRollDrag [expr 1 - (1 - 0.9964) * ($speedo * $dragAdjust) ]
+set sonicWalkDrag [expr 1 - (1 - 0.98) * ($speedo * $dragAdjust) ]
+set sonicAirDrag [expr 1 - (1 - 0.9882) * ($speedo * $dragAdjust) ]
+
+set sonicSlopePush [expr $speedo * 0.32]
+set sonicDetachM [expr $speedo * 7.5]
+
+set sonicRunAccel [expr $speedo * 0.24]
+set sonicSkidAccel [expr $speedo * 0.32000000000000006]
+set sonicRollBrake [expr $speedo * 0.08000000000000002]
+
+set sonicSpeedBoost [expr 4.0 * (1.0-((1.0-($speedo**1.6))**2)) ]
+puts $sonicSpeedBoost
+puts [expr 4.0 * $speedo]
+
+# Original values
+set original_sonicJumpStartYM 9.0
+set original_sonicGravity 0.70
+
+# Scale gravity
+set sonicGravity [expr $speedo * $original_sonicGravity]
+
+# Recalculate jump start velocity to maintain height
+set sonicJumpStartYM [expr sqrt(($original_sonicJumpStartYM ** 2) / $original_sonicGravity * $sonicGravity)]
+
+
+
+# Original values
+set original_sonicJumpContinueM 1.20
+set original_sonicJumpContinueDecline 0.875
+
+# Adjust continued jump strength (scale by game speed)
+set sonicJumpContinueM [expr $original_sonicJumpContinueM * $speedo]
+
+# Adjust continued jump decay rate (closer to original)
+set sonicJumpContinueDecline [expr 1 - (1 - $original_sonicJumpContinueDecline) * 0.9]
+
+#set sonicJumpContinueM 0
+#set sonicJumpContinueDecline 0
+
+
 
 set framecounter 0
 set framecount 0.0
@@ -937,6 +1068,17 @@ initGameVariables
 #.c moveto sonic [expr {$::sonicx-3}] [expr {$::sonicy-3}]
 #debugMsg $sonicx $sonicy $sonica
 
+# Tue Jan 21: slowed the game down to roughly 80% the speed it ran at before, now momentum constants need to be converted and updated
+# Procedure to adjust x momentum 
+proc newxm {oldXMomentum} {
+ return [expr {$oldXMomentum * $::speedo}]
+}
+# Procedure to adjust y momentum
+proc newym {oldYMomentum} {
+ return [expr {$oldYMomentum * sqrt($::sonicGravity / $::original_sonicGravity)}]
+}
+
+
 lassign {0 1 2 4 8 16 32 64} I_UP I_DOWN I_LEFT I_RIGHT I_JUMP I_START
 set I_DIRECTIONAL [expr {$I_UP | $I_DOWN | $I_LEFT | $I_RIGHT}]
 set I_LR [expr {$I_RIGHT | $I_LEFT}]
@@ -953,7 +1095,8 @@ set cxo 0
 set cyo 0
 
 proc updateCameraOffset {oldx oldy} {
- #puts "updateCameraOffset:\n$oldx	$oldy\n$::sonicx	$::sonicy\n"
+ #debugMsg "updateCameraOffset:\n$oldx	$oldy\n$::sonicx	$::sonicy\n"
+ #return
  set ::cxo [expr {$::cxo-($::sonicx-$oldx)}]
  set ::cyo [expr {$::cyo-($::sonicy-$oldy)}]
  if {abs($::cxo)>320} {set ::cxo [expr {$::cxo * 0.77}]}
@@ -984,12 +1127,12 @@ proc helpImStuck {} {
 }
 
 proc unhurtSonic {} {
- if {$::sonicState == $::SONIC_HURT} {
+ if {$::sonicState == {HURT}} {
   set ::sonicInvinc [expr {3*60}]
-  set ::sonicState $::SONIC_NORMAL
+  set ::sonicState NORMAL
  }
- if {! $::sonicOnFloor && $::sonicState == $::SONIC_ROLL } {
-  set ::sonicState $::SONIC_SPIN
+ if {! $::sonicOnFloor && $::sonicState == {ROLL} } {
+  set ::sonicState SPIN
  }
 }
 
@@ -1024,8 +1167,8 @@ proc detachSonicFromFloor {} {
  }
  set ::sonicox $::sonicx
  set ::sonicoy $::sonicy
- if {$::sonicState == $::SONIC_ROLL} {
-  set ::sonicState $::SONIC_SPIN
+ if {$::sonicState == {ROLL}} {
+  set ::sonicState SPIN
  }
 }
 
@@ -1068,13 +1211,10 @@ proc attachSonicToFloor {px py} {
     set oldx $::sonicx; set oldy $::sonicy;
 
     # if this is a 'green floor' and we landed 'inside' it, let's push up to the top so that sonic is comfortably placed, and the wall collision detection won't kill sonic's momentum
-    if { [[lindex $::level $::sonicl] get [expr {int($px)}] [expr {int($py)}]] eq {0 128 0} || [[lindex $::level $::sonicl] get [expr {int($px)}] [expr {int($py-1)}]] eq {0 128 0} } {
-     set ipx [expr {int($px)}]; set ipy [expr {int($py)}]; set l [lindex $::level $::sonicl]; while {[$l get $ipx $ipy] eq {0 128 0}} {incr ipy -1}; set py [expr {double($ipy)}]
+    if { [levelGet $::sonicl [expr {int($px)}] [expr {int($py)}]] eq {p} || [levelGet $::sonicl [expr {int($px)}] [expr {int($py-1)}]] eq {p} } {
+     set ipx [expr {int($px)}]; set ipy [expr {int($py)}]; while {[levelGet $::sonicl $ipx $ipy] eq {p}} {incr ipy -1}; set py [expr {double($ipy)}]
      debugMsg "green floor y correction mechanism activated"
     }
-#if { [[lindex $::level $::sonicl] get [expr {int($px)}] [expr {int($py)}]] eq {255 128 128} } {
-# tk_messageBox -title "INSIDE A WALL" -message "SONIC HAS LANDED INSIDE A WALL" -detail "sonic is inside a wall at [int $::sonicx],[int $::sonicy]"
-#}
 
     set ::sonicx $px
     set ::sonicy $py
@@ -1108,9 +1248,9 @@ proc attachSonicToFloor {px py} {
     set ::sonicym 0
     set ::sonicOnFloor 1
     unhurtSonic
-    set ::sonicState $::SONIC_NORMAL
+    set ::sonicState NORMAL
     if {$::sonicm && ($::input & $::I_DOWN)} {
-     set ::sonicState $::SONIC_ROLL
+     set ::sonicState ROLL
      playSound roll
     }
     set ::sonicWasOnObjectPlatform 0
@@ -1145,20 +1285,20 @@ proc sonicMovement {} {
 
  # Input response
  # left n right
- if {$::sonicState != $::SONIC_HURT && $::sonicState != $::SONIC_DUCK} {
-  if { $::sonicState != $::SONIC_ROLL } {
+ if {$::sonicState != {HURT} && $::sonicState != {DUCK}} {
+  if { $::sonicState != {ROLL} } {
    if {$::input & $::I_LEFT} {
-    set ::sonicm [expr {$::sonicm - $::sonicRunAccel*( $::sonicSpeed ? 4.0 : 1.0) }]
+    set ::sonicm [expr {$::sonicm - $::sonicRunAccel*( $::sonicSpeed ? $::sonicSpeedBoost : 1.0) }]
     set ::sonicFacing 0
     if {$::sonicm > 0} {
-     set ::sonicm [expr {$::sonicm - $::sonicSkidAccel*( $::sonicSpeed ? 4.0 : 1.0) }]
+     set ::sonicm [expr {$::sonicm - $::sonicSkidAccel*( $::sonicSpeed ? $::sonicSpeedBoost : 1.0) }]
      set skid 1
     }
    } elseif {$::input & $::I_RIGHT} {
-    set ::sonicm [expr {$::sonicm + $::sonicRunAccel*( $::sonicSpeed ? 4.0 : 1.0) }]
+    set ::sonicm [expr {$::sonicm + $::sonicRunAccel*( $::sonicSpeed ? $::sonicSpeedBoost : 1.0) }]
     set ::sonicFacing 1
     if {$::sonicm < 0} {
-     set ::sonicm [expr {$::sonicm + $::sonicSkidAccel*( $::sonicSpeed ? 4.0 : 1.0) }]
+     set ::sonicm [expr {$::sonicm + $::sonicSkidAccel*( $::sonicSpeed ? $::sonicSpeedBoost : 1.0) }]
      set skid 1
     }
    }
@@ -1175,7 +1315,7 @@ proc sonicMovement {} {
  }
  #  starting a new jump
  #debugMsg "jump info" $::sonicOnFloor $::input $::oinput
- if {$::sonicOnFloor && $::sonicState!=$::SONIC_DUCK && ($::input & $::I_JUMP) && !($::oinput & $::I_JUMP)} {
+ if {$::sonicOnFloor && $::sonicState!={DUCK} && ($::input & $::I_JUMP) && !($::oinput & $::I_JUMP)} {
   #debugMsg "starting jump"
   debugMsg "Sonic starts a jump"
   set ::sonicOnFloor 0
@@ -1199,16 +1339,16 @@ proc sonicMovement {} {
   set ::sonicox $::sonicx
   set ::sonicoy $::sonicy
   # some misc stuff
-  if {$::sonicState!=$::SONIC_ROLL} {set ::sonicState $::SONIC_SPIN}
+  if {$::sonicState!={ROLL}} {set ::sonicState SPIN}
   set ::sonicJumping 1
   playSound jump
  }
  # rolling
- if {$::sonicState==$::SONIC_NORMAL && $::sonicOnFloor && abs($::sonicm)>1.0 && ($::input & $::I_DOWN)} {
-  set ::sonicState $::SONIC_ROLL
+ if {$::sonicState=={NORMAL} && $::sonicOnFloor && abs($::sonicm)>1.0 && ($::input & $::I_DOWN)} {
+  set ::sonicState ROLL
   playSound roll
  }
- if {$::sonicState==$::SONIC_ROLL} {
+ if {$::sonicState=={ROLL}} {
   if {($::input & $::I_LEFT) && $::sonicm>0.0} {
    set ::sonicm [expr {$::sonicm - $::sonicRollBrake}]
   } elseif {($::input & $::I_RIGHT) && $::sonicm<0.0} {
@@ -1217,17 +1357,17 @@ proc sonicMovement {} {
  }
  # ducking
  if {$::sonicOnFloor && abs($::sonicm)<0.001 && ($::input & $::I_DOWN) && ($::sonica>1.0102867940993896 && $::sonica<2.057905842) } {
-  set ::sonicState $::SONIC_DUCK
+  set ::sonicState DUCK
   # charge spindash
   if { (($::input ^ $::oinput) & $::input & $::I_JUMP) && $::sonicDashing<4 } {
    incr ::sonicDashing
    playSound spindash
   }
- } elseif { $::sonicState == $::SONIC_DUCK} {
-  set ::sonicState $::SONIC_NORMAL
+ } elseif { $::sonicState == {DUCK}} {
+  set ::sonicState NORMAL
   # release spindash
   if {$::sonicDashing} {
-   set ::sonicState $::SONIC_ROLL
+   set ::sonicState ROLL
    set ::sonicm [expr { ($::sonicFacing ? 1.0 : -1.0) * (11.6+2*$::sonicDashing) }]
    set oxm $::sonicm
    set ::sonicDashing 0
@@ -1237,7 +1377,7 @@ proc sonicMovement {} {
  }
 
  # Momentum calculation
- if { $::sonicOnFloor && ($::sonica<=0.0 || $::sonica>=$::PI) && abs($::sonicm)<7.5 } {
+ if { $::sonicOnFloor && ($::sonica<=0.0 || $::sonica>=$::PI) && abs($::sonicm)<$::sonicDetachM } {
   debugMsg "Detaching sonic because he is on a very steep slope with low momentum ( angle $::sonica )"
   detachSonicFromFloor
  }
@@ -1247,12 +1387,12 @@ proc sonicMovement {} {
    set ::sonicm [expr {$::sonicm + $::sonicSlopePush * cos($::sonica)}]
   }
   # drag calculations
-  if {$::sonicState==$::SONIC_ROLL} {
+  if {$::sonicState=={ROLL}} {
    set ::sonicm [expr {$::sonicm*$::sonicRollDrag }]
    if { $::sonica<1.6142472221867377 && $::sonica>1.52808727102979 && abs($::sonicm)<0.6 } {
     #debugMsg "set to zero1"
     set ::sonicm 0
-    set ::sonicState $::SONIC_DUCK
+    set ::sonicState DUCK
    } else {
     # extra slope push that only increases speed
     set xm [expr { $::sonicm + $::sonicSlopePush*cos($::sonica) }]
@@ -1270,20 +1410,20 @@ proc sonicMovement {} {
   set ::sonicym [expr {$::sonicym+$::sonicGravity}]
  }
  # deactivate roll
- if {$::sonicOnFloor && $::sonicState==$::SONIC_ROLL && sgn($oxm)!=sgn($::sonicm)} {
-  set ::sonicState $::SONIC_NORMAL
+ if {$::sonicOnFloor && $::sonicState=={ROLL} && sgn($oxm)!=sgn($::sonicm)} {
+  set ::sonicState NORMAL
  }
 
  # Movement
  set ::sonicox $::sonicx
  set ::sonicoy $::sonicy
  # First, check for flyoff point
- if { $::sonicOnFloor && [[lindex $::level $::sonicl] get [expr {int($::sonicx)}] [expr {int($::sonicy)}]] eq {255 128 0}  } {
+ if { $::sonicOnFloor && [levelGet $::sonicl $::sonicx $::sonicy] eq {o}  } {
   sonicFlyOff
  }
  # also first, check if sonic has become stuck in a green floor
- if {$::sonicOnFloor && [[lindex $::level $::sonicl] get [expr {int($::sonicx)}] [expr {int($::sonicy)}]] eq {0 128 0}} {
-  while {[[lindex $::level $::sonicl] get [expr {int($::sonicx)}] [expr {int($::sonicy)}]] eq {0 128 0}} {
+ if {$::sonicOnFloor && [levelGet $::sonicl $::sonicx $::sonicy] eq {p}} {
+  while {[levelGet $::sonicl $::sonicx $::sonicy] eq {p}} {
    set ::sonicy [expr {$::sonicy-1.0}]
   }
   set ::sonica [floorAngle $::sonicl $::sonicx $::sonicy]
@@ -1299,7 +1439,7 @@ proc sonicMovement {} {
     1 { # obstructed
      #debugMsg "obstructed"
      set ::sonicm 0
-     set ::sonicState $::SONIC_NORMAL
+     set ::sonicState NORMAL
     }
     2 { # fell off
      debugMsg "Detaching sonic because he 'fell off'"
@@ -1327,7 +1467,7 @@ proc sonicMovement {} {
     set ::sonicx [expr {$::sonicx+($px-$sonicRightSideX)}]
     set ::sonicy [expr {$::sonicy+($py-$sonicRightSideY)}]
     set ::sonicm 0
-    set ::sonicState $::SONIC_NORMAL
+    set ::sonicState NORMAL
     # && [colTest_walls $::sonicl $sonicLeftSideX $sonicLeftSideY]
    } elseif { $::sonicm <= 0.0 && [wallCollision $::sonicl $sonicTummyX $sonicTummyY $sonicLeftSideX $sonicLeftSideY px py] } {
     debugMsg "on floor, wall detect left	$::sonica, $px, $py	$::sonicx $::sonicy"
@@ -1336,17 +1476,20 @@ proc sonicMovement {} {
     set ::sonicx [expr {$::sonicx+($px-$sonicLeftSideX)}]
     set ::sonicy [expr {$::sonicy+($py-$sonicLeftSideY)}]
     set ::sonicm 0
-    set ::sonicState $::SONIC_NORMAL
+    set ::sonicState NORMAL
    }
-   while {[sonicIsTouching colTest_brownFloorsAndPinkWalls] && abs($::sonicx-$::sonicox)+abs($::sonicy-$::sonicoy)>1 } {
+   set tries 4
+   while {[sonicIsTouching colTest_brownFloorsAndPinkWalls] && [incr tries -1] } {
     debugMsg "floor wall detection stuck fix happening	$::sonicx, $::sonicy,	$::sonicox, $::sonicoy"
  
-    set ::sonicx [expr {$::sonicx + sgn($::sonicox - $::sonicx)}]
-    set ::sonicy [expr {$::sonicy + sgn($::sonicoy - $::sonicy)}]
-    #set ::sonicx [expr {$::sonicx+sin($::sonica+$::PID2)}]
-    #set ::sonicy [expr {$::sonicy+cos($::sonica+$::PID2)}]
-   
+    if { [sonicLeftSideIsTouching colTest_brownFloorsAndPinkWalls] } {
+     moveSonicOnFloor 6
+    } elseif { [sonicRightSideIsTouching colTest_brownFloorsAndPinkWalls] } {
+     moveSonicOnFloor -6
+    }
+    
    }
+   #if {[sonicIsTouching colTest_brownFloorsAndPinkWalls]} {debugMsg "watch out: floor wall stuck fix failure"}
    #debugMsg pxpy $px $py
   }
 
@@ -1361,46 +1504,11 @@ proc sonicMovement {} {
   set ::sonicx [expr {$::sonicx+$::sonicm}]
   set ::sonicy [expr {$::sonicy+$::sonicym}]
   # Check for layer switchers
-  if {$::sonicx>=0 && $::sonicy>=0 && $::sonicx<=$::bx && $::sonicy<=$::by} {
-   switch -- [[lindex $::level $::sonicl] get [expr {int($::sonicx)}] [expr {int($::sonicy)}]] {
-    {128 255 128} {set ::sonicl 0}
-    {255 255 128} {set ::sonicl 1}
-   }
+  switch -- [levelGet $::sonicl $::sonicx $::sonicy] {
+   0 {set ::sonicl 0}
+   1 {set ::sonicl 1}
   }
-  # Sonic's head
-  set sonicHeadOX $::sonicox
-  set sonicHeadOY [expr {$::sonicoy-32.0}]
-  set sonicHeadX $::sonicx
-  set sonicHeadY [expr {$::sonicy-32.0}]
-  set collision [wallCollision $::sonicl $sonicHeadOX $sonicHeadOY $sonicHeadX $sonicHeadY px py]
-  if {$collision==1} {
-   debugMsg "sonics head c==1"
-   set ang [floorAngle $::sonicl $px $py]
-   if {$ang>$::PI} {
-    if {$ang>3.926990816987552 && $ang<5.501560710776383} {
-     debugMsg "sonic bumps his head on the ceiling"
-     set ox $::sonicx; set oy $::sonicy
-     set ::sonicy [expr {$py+32.0}]
-     if { [colTest_floorswalls $::sonicl $::sonicx $::sonicy] } {
-      testbeep 500 "sonic head collision: had to set sonic's x position as well"
-      set ::sonicx $px
-     }
-     updateCameraOffset $ox $oy
-     set ::sonicym 0
-     set ::sonic_jump_x 0
-     set ::sonic_jump_y 0
-    } elseif { $ang>=$::PI+$::PID8 &&  $ang<=$::PI2-$::PID8 } {
-     debugMsg "attachSonicToFloor: sonic's head at $px,$py	ang=$ang"
-     attachSonicToFloor $px $py
-    }
-   }
-  } elseif {$collision==4} {
-   debugMsg "sonics head c==4"
-   set ::sonicx $px   
-   while { [colTest_floorswalls $::sonicl $::sonicx [expr {$::sonicy-32.0}]] } {
-    set ::sonicy [expr {$::sonicy+1.0}]
-   }
-  }
+  
 
   # Sonic's sides
   if {! $::sonicOnFloor } { # must check that sonic is still not on a floor before doing these collision checks
@@ -1418,14 +1526,45 @@ proc sonicMovement {} {
        attachSonicToFloor $px $py
        break
       } else {
-       debugMsg "in-air wall collision (collision==$collision): $side side"
+       debugMsg "in-air wall collision (collision==$collision): $side side at $px,$py"
        # needs fixing: add stuck fix mechanism to stop sonic getting stuck in floors
        set ox $::sonicx
        set ::sonicx [expr {$px-$wallAdjust}]
        #updateCameraOffset $ox $::sonicy
-       if {$ang<=$::PI} {set ::sonicm 0.0}
+       if {$ang<=$::PI || $collision == 4} {set ::sonicm 0.0}
        #if {[colTest $::sonicx $::sonicy]} helpImStuck
       }
+     }
+    }
+   }
+  }
+
+  # Sonic's head
+  if {! $::sonicOnFloor } { # must check that sonic is still not on a floor before doing these collision checks
+   set sonicHeadOX $::sonicox
+   set sonicHeadOY [expr {$::sonicoy-32.0}]
+   set sonicHeadX $::sonicx
+   set sonicHeadY [expr {$::sonicy-32.0}]
+   set collision [wallCollision $::sonicl $sonicHeadOX $sonicHeadOY $sonicHeadX $sonicHeadY px py]
+   if {$collision==1 || $collision==4} {
+    debugMsg "sonics head c==1"
+    if {$collision!=4} {set ang [floorAngle $::sonicl $px $py]}
+    if {$collision==4 || $ang>$::PI} {
+     if {$collision==4 || $ang>3.926990816987552 && $ang<5.501560710776383} {
+      debugMsg "sonic bumps his head on the ceiling"
+      set ox $::sonicx; set oy $::sonicy
+      set ::sonicy [expr {$py+32.0}]
+      if { [colTest_floorswalls $::sonicl $::sonicx $::sonicy] } {
+       testbeep 500 "sonic head collision: had to set sonic's x position as well"
+       set ::sonicx $px
+      }
+      updateCameraOffset $ox $oy
+      set ::sonicym 0
+      set ::sonic_jump_x 0
+      set ::sonic_jump_y 0
+     } elseif { $ang>=$::PI+$::PID8 &&  $ang<=$::PI2-$::PID8 } {
+      debugMsg "attachSonicToFloor: sonic's head at $px,$py	ang=$ang"
+      attachSonicToFloor $px $py
      }
     }
    }
@@ -1434,16 +1573,21 @@ proc sonicMovement {} {
   # Sonic's feet
   if {! $::sonicOnFloor && $::sonicym>=0.0 } { # must check that sonic is still not on a floor before doing this collision check
    set collision [floorCollision $::sonicl $::sonicox $::sonicoy $::sonicx $::sonicy px py]
-   if {$collision && [floorAngle $::sonicl $px $py]<$::PI } {
+   # special check for green floors
+   if {$collision && $collision!=4} {set ang [floorAngle $::sonicl $px $py]}
+   if {$collision == 2 && $ang==$::PID2 && [levelGet $::sonicl $::sonicx $::sonicy] eq {p} && [levelGet $::sonicl $px [expr {$py+1}]] eq {>} } {
+    set ::sonicy [int $::sonicy]; while {[levelGet $::sonicl $::sonicx $::sonicy] eq {p}} {incr ::sonicy -1}
+    debugMsg "attachSonicToFloor: sonic's feet on a horizontal green platform"
+    attachSonicToFloor $::sonicx $::sonicy
+   } elseif {$collision && $collision!=4 && $ang>0.0 && $ang<$::PI } {
     # put here: check the angle and decide what to do and calculate momentum accordingly
     #set ::sonica [floorAngle $::sonicl $px $py]
     debugMsg "attachSonicToFloor: sonic's feet at $px,$py	ang=[floorAngle $::sonicl $px $py]"
     attachSonicToFloor $px $py
-   } elseif {$collision==1} {
+   } elseif {$collision==1 || $collision==4} {
     debugMsg "foot wall collision: watch out! this is probably not meant to happen! at $::sonicx, $::sonicy"
     set ::sonicm 0
     set ::sonicx $px
-    set ::sonicy $py
    }
   }
 
@@ -1479,7 +1623,7 @@ proc sonicMovement {} {
 
  # Update sprite
 
- if { $::sonicState == $::SONIC_NORMAL } {
+ if { $::sonicState == {NORMAL} } {
   set a [expr {7-(int(($::sonica+$::PI2/16.0)/($::PI2/8.0))-3&7)}]
   set spr $a
   if {!$::sonicFacing} {
@@ -1493,18 +1637,16 @@ proc sonicMovement {} {
   set ::framecount [expr { fmod( $::framecountx, 4.0 ) }]
   if {$skid && $::sonicOnFloor} {
    set sprite [lindex $::SsonicSkid $::sonicFacing $spr]
-  } elseif {abs($::sonicm)<9} {
+  } elseif {abs($::sonicm)<9*$::speedo} {
    set sprite [lindex $::SsonicWalking $::sonicFacing [expr {$spr*4+int($::framecount)}]]
-  } elseif {abs($::sonicm)<23} {
+  } elseif {abs($::sonicm)<23*$::speedo} {
    set sprite [lindex $::SsonicRunning $::sonicFacing [expr {$spr*4+int($::framecount)}]]
   } else {
    set sprite [lindex $::SsonicRunning2 $::sonicFacing [expr {$spr*8+int($::framecountx)}]]
   }
   if {$::sonicOnFloor} {
-  .c itemconfigure sonic -image $sprite -anchor $anchor
-  set xfix [lindex {	0	-10	0	-10	0	10	0	10	} $a]
-  set yfix [lindex {	0	10	0	-10	0	-10	0	10	} $a]
-  .c coords sonic [expr {int($::sonicx)+$xfix}] [expr {int($::sonicy)+$yfix}]
+  .c itemconfigure sonic -image $sprite -anchor center
+  .c coords sonic [expr {int($::sonicx+cos($::sonica)*27.0)}] [expr {int($::sonicy-sin($::sonica)*27.0)}]
   } else {
    if {$::sonica!=$::PID2} {
     set oa $::sonica
@@ -1517,10 +1659,10 @@ proc sonicMovement {} {
    .c itemconfigure sonic -image $sprite -anchor center
    .c coords sonic [expr {int($::sonicx)}] [expr {int($::sonicy-28.5)}]
   }
- } elseif { $::sonicState == $::SONIC_SPIN } {
+ } elseif { $::sonicState == {SPIN} } {
   .c itemconfigure sonic -image $::SsonicBall -anchor s
   .c coords sonic [expr {int($::sonicx)}] [expr {int($::sonicy)}]
- } elseif { $::sonicState == $::SONIC_ROLL } {
+ } elseif { $::sonicState == {ROLL} } {
   if {$::sonicOnFloor} {
   .c itemconfigure sonic -image $::SsonicBall -anchor center
   .c coords sonic [expr {int($::sonicx+sin($::sonica+$::PID2)*15.5)}] [expr {int($::sonicy+cos($::sonica+$::PID2)*15.5)}]
@@ -1528,7 +1670,7 @@ proc sonicMovement {} {
    .c itemconfigure sonic -image $::SsonicBall -anchor s
    .c coords sonic [expr {int($::sonicx)}] [expr {int($::sonicy)}]
   }
- } elseif { $::sonicState == $::SONIC_DUCK } {
+ } elseif { $::sonicState == {DUCK} } {
   if {$::sonicDashing} {
    set ::framecount [expr { int($::framecount+1)&3 }]
    .c itemconfigure sonic -image [lindex $::SsonicDash $::sonicFacing $::framecount] -anchor s
@@ -1542,7 +1684,7 @@ proc sonicMovement {} {
    .c itemconfigure sonic -image [lindex $::SsonicDuck $::sonicFacing] -anchor s
    .c coords sonic [expr {int($::sonicx)}] [expr {int($::sonicy)}]
   }
- } elseif { $::sonicState == $::SONIC_HURT } {
+ } elseif { $::sonicState == {HURT} } {
   .c itemconfigure sonic -image [lindex $::SsonicHurt $::sonicFacing] -anchor s
   .c coords sonic [expr {int($::sonicx)}] [expr {int($::sonicy)}]
  }
@@ -1563,13 +1705,14 @@ proc sonicMovement {} {
   .c coords anglelx $::sonicx $::sonicy [expr {$::sonicx+sin($aaa)*$::angleTestIndicatorSize}] [expr {$::sonicy+cos($aaa)*$::angleTestIndicatorSize}]
  }
  # debug level geometry display
- if {($::DEBUG || $::DISABLE_GFX_LAYERS) && $olayer!=$::sonicl} {
-  .c raise [lindex $::layerItems $::sonicl] [lindex $::layerItems $olayer]
+ if {$::DISABLE_GFX_LAYERS && $olayer!=$::sonicl} {
+  #.c itemconfigure gfx-1 -image [lindex {gfx1 gfx0} $::sonicl]
+  .c itemconfigure gfx0 -image [lindex {gfx0 gfx1} $::sonicl]
  }
  # clear 'sonicOnObjectPlatform' every frame. one or more objects must continually set sonicOnObjectPlatform every frame to keep him from falling. once all the objects concerned stop considering sonic to be on their platform(s), he will fall
  set ::sonicOnObjectPlatform 0
  if {$::sonicy > $::by } { set ::sonicy $::by; killSonic }
- if {$::sonicInvinc && $::sonicState!=$::SONIC_HURT && ($::framecounter&1) } {
+ if {$::sonicInvinc && $::sonicState!={HURT} && ($::framecounter&1) } {
   .c coords sonic -640 -480 
  }
 }
@@ -1597,7 +1740,7 @@ proc sonicObjectReboundAction {} {
  if {$::input & $::I_JUMP} { 
   set ::sonicym [expr {-$::sonicym}]
  } else {
-  set ::sonicym -8.305195313
+  set ::sonicym [newym -9.403781916995237]
  }
 }
 
@@ -1730,7 +1873,7 @@ proc speedMon {} {
 }
 proc invincMon {} {
  debugMsg "invincMon"
- set ::sonicStar [expr {60*21}]
+ set ::sonicStar [expr {60*22}]
  if { $::lastSong ne "speed" && $::lastSong ne "invinc" } {
   set ::holdLastSong $::lastSong
  }
@@ -1786,6 +1929,26 @@ proc sonicIsTouching { colTest } {
   return [expr { [$colTest $::sonicl $::sonicx $::sonicy] || [$colTest $::sonicl $sonicLeftSideX $sonicLeftSideY] || [$colTest $::sonicl $sonicRightSideX $sonicRightSideY] }]
  }
 }
+proc sonicLeftSideIsTouching { colTest } {
+ set pa [expr {$::sonica+$::PID2}]
+ set sonicTummyX [expr {$::sonicx+sin($pa)*15.5}]
+ set sonicTummyY [expr {$::sonicy+cos($pa)*15.5}]
+ set sonicSideX [expr {15.5*sin($::sonica)}]
+ set sonicSideY [expr {15.5*cos($::sonica)}]
+ set sonicLeftSideX [expr {$sonicTummyX-$sonicSideX}]
+ set sonicLeftSideY [expr {$sonicTummyY-$sonicSideY}]
+ $colTest $::sonicl $sonicLeftSideX $sonicLeftSideY
+}
+proc sonicRightSideIsTouching { colTest } {
+ set pa [expr {$::sonica+$::PID2}]
+ set sonicTummyX [expr {$::sonicx+sin($pa)*15.5}]
+ set sonicTummyY [expr {$::sonicy+cos($pa)*15.5}]
+ set sonicSideX [expr {15.5*sin($::sonica)}]
+ set sonicSideY [expr {15.5*cos($::sonica)}]
+ set sonicRightSideX [expr {$sonicTummyX+$sonicSideX}]
+ set sonicRightSideY [expr {$sonicTummyY+$sonicSideY}]
+ $colTest $::sonicl $sonicRightSideX $sonicRightSideY
+}
 
 proc monitorAction { cItem data } {
  if {abs([lindex $data 0]-$::sonicx)>640.0 || abs([lindex $data 1]-$::sonicy)>500.0} return
@@ -1814,7 +1977,7 @@ proc monitorAction { cItem data } {
   # set ::sonicy [expr {$y-30}]
   # return
   #}
-  if {$::sonicState == $::SONIC_ROLL} {
+  if {$::sonicState == {ROLL}} {
    upvar objectIndex objectIndex
    popMonitor $objectIndex
    return
@@ -1837,7 +2000,7 @@ proc monitorAction { cItem data } {
   }
  } else { 
   # sonic in the air -----------------------------------------------------------------------
-  if {$::sonicState == $::SONIC_SPIN || $::sonicState == $::SONIC_ROLL} {
+  if {$::sonicState == {SPIN} || $::sonicState == {ROLL}} {
    set yy [expr {$y+15.0}]
    set sy [expr {$::sonicy+15.5}]
    if { sqrt( pow($x-$::sonicx,2)+pow($y-$::sonicy,2) ) < 32.0 } {
@@ -1883,7 +2046,7 @@ proc ringAction {cItem data} {
  # check for collision
  if {abs($::sonicx-[lindex $data 0])>128.0} return
  lassign $data x y
- if {$::sonicState!=$::SONIC_HURT && $x>=$::sbbx1 && $x<=$::sbbx2 && $y>=$::sbby1 && $y<=$::sbby2} {
+ if {$::sonicState!={HURT} && $x>=$::sbbx1 && $x<=$::sbbx2 && $y>=$::sbby1 && $y<=$::sbby2} {
   incr ::sonicRings; playSound ring; .c delete $cItem; makeSparkle $x $y; upvar objectIndex objectIndex; lset ::levelObjects $objectIndex {}; return
  }
 }
@@ -1899,7 +2062,7 @@ proc lostRingAction {cItem data} {
  set x [expr {$ox+$xm}]
  set y [expr {$oy+$ym}]
  if {$y >= $::by+21} {.c delete $cItem; lset ::levelObjects $objectIndex {}; return}
- set ym [expr {$ym+0.25}]
+ set ym [expr {$ym+0.25*$::speedo}]
  set collided [collision colTest_lostRingCustom $l $ox $oy $x $y x y]
  if { $collided } {
   set xx [expr {int($x+rand()*3-1)}]
@@ -1917,14 +2080,12 @@ proc lostRingAction {cItem data} {
    set ym [expr {-$ym}]
   }
  }
- .c coords $cItem $x $y
- lset ::levelObjects $objectIndex 3 [list $x $y $xm $ym $l $counter]
  if {$y>=$::by+21 || ($counter>10*60 && rand()>0.99)} {
-  .c delete $cItem; lset ::levelObjects $objectIndex {}; return
- }
- if {abs($::sonicx-$x)>160.0} return
- if {$::sonicState!=$::SONIC_HURT && $x>=$::sbbx1 && $x<=$::sbbx2 && $y>=$::sbby1 && $y<=$::sbby2} {
-  incr ::sonicRings; playSound ring; .c delete $cItem; makeSparkle $x $y; lset ::levelObjects $objectIndex {}; return
+  .c delete $cItem; lset ::levelObjects $objectIndex {}
+ } elseif {abs($::sonicx-$x)<=160.0 && $::sonicState!={HURT} && $x>=$::sbbx1 && $x<=$::sbbx2 && $y>=$::sbby1 && $y<=$::sbby2} {
+  incr ::sonicRings; playSound ring; .c delete $cItem; makeSparkle $x $y; lset ::levelObjects $objectIndex {}
+ } else {
+  .c coords $cItem $x $y; lset ::levelObjects $objectIndex 3 [list $x $y $xm $ym $l $counter]
  }
 }
 
@@ -1960,7 +2121,7 @@ proc makeBouncyBall {x y {movementFunction {}} {xRange 100} {yRange 100} {speed 
 
 proc bb_movement_circle {} {
  upvar x x y y xr xr yr yr speed speed angleOffset angleOffset
- set a [expr {$::framecounter * $speed + $angleOffset}]
+ set a [expr {$::framecounter * $speed * $::speedo + $angleOffset}]
  set x [expr {$x+sin($a)*$xr}]
  set y [expr {$y+cos($a)*$yr}]
 }
@@ -2060,10 +2221,10 @@ proc springLeftAction {cItem data} {
  lassign $data x y
  if { [thisPointIsTouchingSonic $x $y] } {
   if {$::sonicOnFloor} {
-   set ::sonicm [expr { -30 * ($::sonica>$::PI ? -1.0 : 1.0) }]
+   set ::sonicm [expr { -30*$::speedo * ($::sonica>$::PI ? -1.0 : 1.0) }]
   } else {
    unhurtSonic
-   set ::sonicm -20.0
+   set ::sonicm [expr {-20.0*$::speedo}]
   }
   playSound spring
  }
@@ -2073,10 +2234,10 @@ proc springRightAction {cItem data} {
  lassign $data x y
  if { [thisPointIsTouchingSonic $x $y] } {
   if {$::sonicOnFloor} {
-   set ::sonicm [expr { 30 * ($::sonica>$::PI ? -1.0 : 1.0) }]
+   set ::sonicm [expr { 30*$::speedo  * ($::sonica>$::PI ? -1.0 : 1.0) }]
   } else {
    unhurtSonic
-   set ::sonicm 20.0
+   set ::sonicm [expr {20.0*$::speedo}]
   }
   playSound spring
 
@@ -2092,23 +2253,23 @@ proc springUpAction {cItem data} {
   } else {
    unhurtSonic
   }
-  set ::sonicym -25.0
+  set ::sonicym [newym -25.0]
    playSound spring
  }
 }
 proc springULeftAction {cItem data} {
  if {abs($::sonicx-[lindex $data 0])>128.0 || abs($::sonicy-[lindex $data 1])>128.0} return
- lassign $data x y
+ lassign $data x y; if {$::sonicox == $x} return
  if { [thisPointIsTouchingSonic $x $y] } {
   if {$::sonicOnFloor} {
    set ::sonicOnFloor 0
   } else {
    unhurtSonic
-   set ::sonicx $x
-   set ::sonicy $y
   }
-  set ::sonicym -20.0
-  set ::sonicm -20.0
+  set ::sonicx $x
+  set ::sonicy $y
+  set ::sonicym [newym -20.0]
+  set ::sonicm [newxm -21.0]
   playSound spring
 
  }
@@ -2121,11 +2282,11 @@ proc springURightAction {cItem data} {
    set ::sonicOnFloor 0
   } else {
    unhurtSonic
-   set ::sonicx $x
-   set ::sonicy $y
   }
-  set ::sonicym -20.0
-  set ::sonicm 20.0
+  set ::sonicx $x
+  set ::sonicy $y
+  set ::sonicym [newym -20.0]
+  set ::sonicm [newxm 21.0]
   playSound spring
  }
 }
@@ -2154,11 +2315,11 @@ proc hurtSonic {} {
   return
  }
  # set sonic's state
- set ::sonicState $::SONIC_HURT
+ set ::sonicState HURT
  set ::sonicInvinc [expr {4*60}]
  set ::sonicOnFloor 0 
- set ::sonicym -11.0
- set ::sonicm [expr {$::sonicFacing ? -6 : 6}]
+ set ::sonicym [newym -12.457]
+ set ::sonicm [expr {($::sonicFacing ? -7.692307692 : 7.692307692 )*$::speedo}]
  if {$::sonicHasShield} {
   .c coords shield -640 -480
   set ::sonicHasShield 0
@@ -2173,7 +2334,7 @@ proc hurtSonic {} {
  set randomOffset [expr { rand()*6.283 }]
  for {set i 0} {$i<$n} {incr i} {
   set a [expr {double($i)/double($n)*$::PI2 + $randomOffset}]
-  makeLostRing $::sonicx $y [expr {sin($a)*8.0}] [expr {cos($a)*8.0}] $::sonicl
+  makeLostRing $::sonicx $y [expr {sin($a)*8.0*$::speedo}] [expr {cos($a)*8.0*$::speedo}] $::sonicl
  }
  playSound rings
  # remove rings from sonic
@@ -2185,11 +2346,13 @@ set ::sonicDead 0
 proc killSonic {} {
  set ::sonicDead 1
  .c itemconfigure sonic -image $::SsonicHurtL -anchor center
+ .c coords sonic $::sonicx $::sonicy
  playSound hit
  .c moveto shield -600 -600;  .c moveto spindash -600 -600
  set v -15
  if { $::recordingPos >= $::watchPos } {
-  while { [lindex [.c coords sonic] 1] <  [lindex [.c yview] 0]*[image height level0]+480+60 } {
+  if {$::sonicy > $::by} {set ::sonicy $::by}
+  while { [lindex [.c coords sonic] 1] <  [cy 510] } {
    set v [expr {$v+1.0}]
    .c move sonic 0 $v
    update
@@ -2198,6 +2361,7 @@ proc killSonic {} {
   if { ! $::recordGame } vignetteEffect
  }
  set ::sonicDead 0
+ saveReplay
  loadLevel $::currentLevelPath
 }
 
@@ -2298,7 +2462,7 @@ label .snackreallyreallyreallyreallysucks
 bind .snackreallyreallyreallyreallysucks <Destroy> {
  if {$::recordGame} {
   set f [open $demoFile w]
-  puts $f [join $::gameRecording \n]
+  puts $f $::fullGameRecording
   close $f
  }
  exit
@@ -2316,7 +2480,6 @@ titleScreen
 #loadLevel robynlevel
 #loadLevel finale
 
-loadLevel [lindex $gameLevels $::currentLevelIndex]
 
 if {$::DEBUG} {
  bind .c <ButtonPress-1> {
@@ -2325,7 +2488,7 @@ if {$::DEBUG} {
   set ::sonicym 0
   set ::sonicx [.c canvasx %x]
   set ::sonicy [.c canvasy %y]
-  set ::sonicState $::SONIC_NORMAL
+  set ::sonicState NORMAL
  }
  bind . <Key-u> {
   detachSonicFromFloor
@@ -2360,6 +2523,7 @@ update
 wm geometry . [winfo reqwidth .]x[winfo reqheight .]
 
 proc gameMainLoop {} {
+ if {$::restarted} {loadLevel [lindex $::gameLevels $::currentLevelIndex]}
  uplevel "#0" {
   set sonicStarType 0
   set ringframe 0
@@ -2367,7 +2531,8 @@ proc gameMainLoop {} {
 
   while 1 {
 
-
+   
+   set cms [clock microseconds]; incr cms $frameMs
    set timeTaken [lindex [time {
     set framecounter [expr {($framecounter + 1)&0xffffff}]
     if {($framecounter&0b11)==0} {
@@ -2381,7 +2546,7 @@ proc gameMainLoop {} {
     processObjects
     processScheduledCommands
     if {$::sonicx >= $::goalx1  &&  $::sonicy >= $::goaly1  &&  $::sonicx <= $::goalx2  &&  $::sonicy <= $::goaly2} sonicHasPassed
-    if {$::restarted} {set ::restarted 0; }
+    if {$::restarted} {set ::restarted 0; return}
 
     if {$::gameComplete} return
     if {$::sonicStar} {
@@ -2407,20 +2572,26 @@ proc gameMainLoop {} {
     }
 
     set oinput $input
-    .f.l3 conf -text [lindex $sonicStateNames $sonicState]
+    .f.l3 conf -text "$sonicOnFloor $sonicState"
     #if {rand()>0.96} {set input [expr { $input ^ int( rand()*256) }]}
-    if { ! $::playRecording || $recordingPos >= $watchPos } {update}
-    if {$::recordGame} {
-     lappend gameRecording $input
-    } elseif {$::playRecording} {
+    if { ! $::playRecording || $recordingPos >= $watchPos } {update
+#puts "\n$::sonicx $::sonicy $::sonicm $::sonicym $::sonicState $::sonica"
+#exit
+}
+    if {$::playRecording} {
      set input [lindex $::gameRecording $recordingPos]
      .f.l4 configure -text "frame: $recordingPos"
      incr recordingPos
      if {$input eq {}} {set ::playRecording 0; set input 0}
+    } else {
+     lappend ::gameRecording $input
     }
     #puts "$::framecounter	$input"
+    
 
    }] 0];
+   #set realtt [expr { [clock microseconds] - $cms }]
+   #puts "$timeTaken	$realtt"
    #puts "timetaken [format %.2g [expr {$timeTaken/1000.0}]]"
    lappend ::timeAverage $timeTaken
  
@@ -2434,12 +2605,17 @@ proc gameMainLoop {} {
     }; puts ""
    }
 
+   #after 4
+
+
    if { $recordingPos >= $watchPos } {
     if {[string is integer -strict $wtime]} {
     after $wtime
     } else {
-     after [expr { int((16666.66666666-$timeTaken)/$timeDivisor) }]
+     after [expr { int((16666.66666666-$timeTaken)/$timeDivisor )-2 }]
     }
+    if { [clock microseconds] >= $cms } {puts lag\ fc$framecounter\	[clock microseconds]\	$cms}
+    while {[clock microseconds] < $cms} {}
    }
 
   }
@@ -2454,7 +2630,8 @@ button .retryAfterBug -text "sorry, there was an error, click here to restart le
  pack forget .m
  pack forget .retryAfterBug
  pack .c -expand [cmdArgument -expand 1] -fill [cmdArgument -fill none]
- loadLevel $::currentLevelPath
+ #loadLevel $::currentLevelPath
+ set ::restarted 1
  set ::smashmyballs {}
 }
 message .m
@@ -2464,7 +2641,12 @@ while { ! $gameComplete } {
  if {[catch {
   gameMainLoop
  } errorInfo]} {
+  if { ! [string first {LEVEL_LOADED} $errorInfo] } {
+   set ::restarted 0
+   continue
+  }
   if {! $::gameComplete } {
+   saveReplay
    puts $errorInfo
    set msgtext "The level needs to be restarted.\nI am truly sorry for this inconvenience.\n\n"
    foreach i {sonicox sonicoy sonicx sonicy sonica sonicl sonicm sonicym sonicState sonicOnFloor levelTitle} {
@@ -2476,7 +2658,7 @@ while { ! $gameComplete } {
    playSound bugcheck
    pack .retryAfterBug -fill x
    pack forget .c
-   .m configure -background blue -foreground white -text $msgtext
+   .m configure -background darkblue -foreground white -text $msgtext
    pack .m -fill both -expand 1
    tkwait variable ::smashmyballs
   }

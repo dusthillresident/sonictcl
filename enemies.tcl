@@ -6,7 +6,7 @@ proc cItemBboxToXY {item rx ry} {
 }
 
 proc distanceBetweenTwoItems {item1 item2} {
- cItemBboxToXY $item1 sx sy
+ if {$item1 eq {sonic}} {upvar ::sbbcx sx ::sbbcy sy} else {cItemBboxToXY $item1 sx sy}
  cItemBboxToXY $item2 xx yy
  return [expr { sqrt( pow($sx-$xx,2)+pow($sy-$yy,2) ) }]
 }
@@ -17,7 +17,8 @@ proc distanceBetweenTwoItems {item1 item2} {
 
 proc makeRocket {x y {m 4.0}} {
  makeBurst $x $y
- cItemBboxToXY sonic sx sy
+ #cItemBboxToXY sonic sx sy
+ upvar ::sbbcx sx ::sbbcy sy
  set a [expr { atan2( -($sy-$y), ($sx-$x) )+$::PID2 + ($::PI2/128*(rand()*2-1.0))  }]
  set xm [expr { $m*sin($a) }]
  set ym [expr { $m*cos($a) }]
@@ -50,7 +51,7 @@ proc rocketAction { cItem data } {
 image create photo blankImage -width 1 -height 1
 
 proc makeBird {x y} {
- set objData [list $x $y [list [expr {int(rand()*1000)}] [expr {int(rand()*1000)}] [expr {int(rand()*1000)}] [expr {int(rand()*1000)}] [expr {int(rand()*1000)}] [expr {int(rand()*1000)}]]]
+ set objData [list $x $y [list [expr {int(rand()*1000*$::speedo)}] [expr {int(rand()*1000*$::speedo)}] [expr {int(rand()*1000*$::speedo)}] [expr {int(rand()*1000*$::speedo)}] [expr {int(rand()*1000*$::speedo)}] [expr {int(rand()*1000*$::speedo)}]]]
  set cItem [.c create image $x $y -image blankImage -tag object]
  lappend ::levelObjects [list BIRD birdAction $cItem $objData] 
 }
@@ -74,7 +75,7 @@ proc birdAction {cItem data} {
  cItemBboxToXY $cItem xx yy
  set collision [expr { sqrt( pow($sx-$xx,2)+pow($sy-$yy,2) )<31.0 }]
  if {$collision} {
-  if {$::sonicStar || $::sonicState == $::SONIC_SPIN || $::sonicState == $::SONIC_ROLL} {
+  if {$::sonicStar || $::sonicState == {SPIN} || $::sonicState == {ROLL}} {
    makeBurst $xx $yy
    upvar objectIndex i
    lset ::levelObjects $i {}
@@ -120,14 +121,14 @@ proc snailAction {cItem data} {
 
   WALKING {
 
-   set endangered [expr {  ( $::sonicState == $::SONIC_SPIN && abs($::sonicx-$x)<240 && abs($::sonicy-$y)<240 ) }]
+   set endangered [expr {  ( $::sonicState == {SPIN} && abs($::sonicx-$x)<240 && abs($::sonicy-$y)<240 ) }]
    if {$endangered && rand()>0.996} {makeRocket $x $y 4.44}
    
    if {1 & $::framecounter || $endangered  } {
 
     for {set n 0} {$n<=$endangered} {incr n} {
      set xof [expr { $facing ? 3 : -3 }]
-     if { ![floorCollision $layer $x [expr {$y-6}] [expr {$x+$xof}] [expr {$y+12}] px py] || [colTest_floorswalls $layer [expr {$x+$xof}] [expr {$y-10}]] } {
+     if { ![floorCollision $layer $x [expr {$y-6}] [expr {$x+$xof}] [expr {$y+9}] px py] || [colTest_floorswalls $layer [expr {$x+$xof}] [expr {$y-10}]] } {
       set facing [expr {!$facing}]
       set xof [expr { $facing ? 3 : -3 }]
      } else {
@@ -137,7 +138,7 @@ proc snailAction {cItem data} {
     }
 
    }
-   if {$::sonicOnFloor && $::sonicState==$::SONIC_ROLL && abs($::sonicx-$x)<240 && abs($::sonicy-$y)<66 } {
+   if {$::sonicOnFloor && $::sonicState=={ROLL} && abs($::sonicx-$x)<240 && abs($::sonicy-$y)<66 } {
     set state JUMPING
     set jumpym -15.0
    }
@@ -170,7 +171,7 @@ proc snailAction {cItem data} {
  upvar objectIndex i; lset ::levelObjects $i 3 [list $x $y $layer $facing $state $jumpym] 
  
  if {[distanceBetweenTwoItems sonic $cItem] < 31} {
-  if {$::sonicState == $::SONIC_SPIN || $::sonicState == $::SONIC_ROLL || $::sonicStar} {
+  if {$::sonicState == {SPIN} || $::sonicState == {ROLL} || $::sonicStar} {
    makeBurst $x $y
    .c delete $cItem
    lset ::levelObjects $i {}
@@ -212,12 +213,12 @@ proc frogAction {cItem data} {
 
   WALKING {
 
-   set endangered [expr {  ( $::sonicState == $::SONIC_SPIN && abs($::sonicx-$x)<240 && abs($::sonicy-$y)<240 ) }]
+   set endangered [expr {  ( $::sonicState == {SPIN} && abs($::sonicx-$x)<240 && abs($::sonicy-$y)<240 ) }]
    if {$endangered && rand()>0.996} {makeRocket $x $y 4.44}
    
    if {1 & $::framecounter || $endangered  } {
     for {set n 0} {$n < 1+$endangered} {incr n} {
-     set xof [expr { $facing ? 1 : -1 }]
+     set xof [expr { ($facing ? 1 : -1)*$::speedo }]
      if { [floorCollision $layer $x $y $x [expr {$y-10}] px py] } {
       set facing [expr {!$facing}]
       set xof [expr { $facing ? 1 : -1 }]
@@ -231,9 +232,9 @@ proc frogAction {cItem data} {
      }
     }
    }
-   if {$::sonicOnFloor && $::sonicState==$::SONIC_ROLL && abs($::sonicx-$x)<240 && abs($::sonicy-$y)<66 } {
+   if {$::sonicOnFloor && $::sonicState=={ROLL} && abs($::sonicx-$x)<240 && abs($::sonicy-$y)<66 } {
     set state JUMPING
-    set jumpym -15.0
+    set jumpym -14.0
    }
 
   }
@@ -254,7 +255,7 @@ proc frogAction {cItem data} {
    if { ! (0b111 & $::framecounter) } {
     makeRocket $x $y 6.6
    }
-   set jumpym [expr {$jumpym + 0.5}]
+   set jumpym [expr {$jumpym + 0.4}]
   }
 
  }
@@ -264,7 +265,7 @@ proc frogAction {cItem data} {
  upvar objectIndex i; lset ::levelObjects $i 3 [list $x $y $layer $facing $state $jumpym] 
  
  if {[distanceBetweenTwoItems sonic $cItem] < 31} {
-  if {$::sonicState == $::SONIC_SPIN || $::sonicState == $::SONIC_ROLL || $::sonicStar} {
+  if {$::sonicState == {SPIN} || $::sonicState == {ROLL} || $::sonicStar} {
    makeBurst $x $y
    .c delete $cItem
    lset ::levelObjects $i {}
@@ -287,7 +288,7 @@ proc frogAction {cItem data} {
 image create photo blankImage2 -width 1 -height 1
 
 proc makeBug {x y} {
- set objData [list $x $y [list [expr {int(rand()*1000)}] [expr {int(rand()*1000)}] [expr {int(rand()*1000)}] [expr {int(rand()*1000)}] [expr {int(rand()*1000)}] [expr {int(rand()*1000)}]]]
+ set objData [list $x $y [list [expr {int(rand()*1000*$::speedo)}] [expr {int(rand()*1000*$::speedo)}] [expr {int(rand()*1000*$::speedo)}] [expr {int(rand()*1000*$::speedo)}] [expr {int(rand()*1000*$::speedo)}] [expr {int(rand()*1000*$::speedo)}]]]
  set cItem [.c create image $x $y -image blankImage2 -tag object]
  lappend ::levelObjects [list FLYBUG bugAction $cItem $objData] 
 }
@@ -311,7 +312,7 @@ proc bugAction {cItem data} {
  cItemBboxToXY $cItem xx yy
  set collision [expr { sqrt( pow($sx-$xx,2)+pow($sy-$yy,2) )<31.0 }]
  if {$collision} {
-  if {$::sonicStar || $::sonicState == $::SONIC_SPIN || $::sonicState == $::SONIC_ROLL} {
+  if {$::sonicStar || $::sonicState == {SPIN} || $::sonicState == {ROLL}} {
    makeBurst $xx $yy
    upvar objectIndex i
    lset ::levelObjects $i {}
