@@ -21,3 +21,4 @@ Disable joypad (you might need to do this if you have a laptop that exposes the 
 
 Start on level '[number]': `-level [number]`
 
+Thank you
