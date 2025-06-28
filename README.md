@@ -1,6 +1,8 @@
 # sonictcl
 Sonic the hedgehog game in Tcl/Tk
 
+To play on windows, download the zip and extract it somewhere, and then double click the "windows_run.bat" file.
+
 To play on Debian or Ubuntu or similar linux distros, you should install these packages:
 
 `tcl tk tcl-snack`
